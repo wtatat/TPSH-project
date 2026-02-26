@@ -12,6 +12,7 @@ from scripts.config import Settings
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 logger = logging.getLogger(__name__)
+OFFTOPIC_SQL = "SELECT COUNT(*)::bigint AS value FROM videos WHERE false"
 
 
 class SQLValidationError(ValueError):
@@ -102,6 +103,25 @@ SQL: SELECT COALESCE(SUM(reports_count), 0)::bigint AS value FROM videos
 """.strip()
 
 
+def build_sql_generation_prompt() -> str:
+    # Single-pass mode: the same LLM call handles both SQL generation and off-topic rejection.
+    return (
+        build_system_prompt()
+        + "\n\n"
+        + "Additional strict rules (highest priority):\n"
+        + f"- If the message is off-topic, greeting, command (e.g. /start), profanity, random text, emoji-only, or nonsense, return exactly this SQL: {OFFTOPIC_SQL}\n"
+        + f"- If the request asks for non-numeric output (list of ids, names, text), return exactly this SQL: {OFFTOPIC_SQL}\n"
+        + "- Always return one SELECT query with one numeric column alias `value` and nothing else.\n"
+        + "\nExamples:\n"
+        + "Q: /start\n"
+        + f"SQL: {OFFTOPIC_SQL}\n"
+        + "Q: жопа\n"
+        + f"SQL: {OFFTOPIC_SQL}\n"
+        + "Q: Какой айди у самого популярного видео?\n"
+        + f"SQL: {OFFTOPIC_SQL}"
+    )
+
+
 def extract_sql(text: str) -> str:
     cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.IGNORECASE | re.DOTALL)
     fenced = re.search(r"```(?:sql)?\s*(.*?)```", cleaned, flags=re.IGNORECASE | re.DOTALL)
@@ -131,7 +151,7 @@ class OpenRouterSQLBuilder:
             await self.session.close()
 
     async def build_sql(self, question: str) -> str:
-        system_prompt = build_system_prompt()
+        system_prompt = build_sql_generation_prompt()
         sql = await self._request_sql(system_prompt, question)
         try:
             return validate_sql(sql)
