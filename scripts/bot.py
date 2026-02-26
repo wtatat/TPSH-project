@@ -56,23 +56,6 @@ class MetricsBot:
 
         started_at = time.perf_counter()
         try:
-            is_metric_question = await self.sql_builder.is_metric_question(question)
-            if not is_metric_question:
-                source = "reject"
-                answer = "0"
-                elapsed_ms = round((time.perf_counter() - started_at) * 1000)
-                logger.info(
-                    "Handled message user_id=%s source=%s elapsed_ms=%s question=%r sql=%r answer=%s",
-                    message.from_user.id if message.from_user else None,
-                    source,
-                    elapsed_ms,
-                    question,
-                    None,
-                    answer,
-                )
-                await self._send_number(message, answer)
-                return
-
             source = "llm"
             sql = await self.sql_builder.build_sql(question)
             value = await self.database.fetch_single_number(sql)
