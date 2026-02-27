@@ -1,111 +1,152 @@
-# Telegram-бот тестовое задание ТПШ
+# Telegram-бот для расчета метрик по видео
 
-Проект поднимает PostgreSQL, загружает `videos.json` в нормализованные таблицы и запускает Telegram-бота, который принимает вопросы на русском и отвечает одним числом.
+Бот принимает вопрос на русском языке, преобразует его в структурированный план запроса через LLM и возвращает одно число, рассчитанное по PostgreSQL.
+
+## Что реализовано
+
+- PostgreSQL со схемой `videos` и `video_snapshots`
+- Автоматическая инициализация таблиц
+- Автоматическая загрузка `videos.json` при первом запуске
+- Telegram-бот на `aiogram` (async)
+- Асинхронные запросы к БД (`asyncpg`)
+- Асинхронный вызов LLM API (`aiohttp`)
+- Запуск локально одной командой через `docker compose up --build`
 
 ## Стек
 
 - Python 3.12
-- aiogram (асинхронный Telegram-бот)
-- asyncpg (асинхронные запросы к PostgreSQL)
-- aiohttp (асинхронный HTTP-клиент для OpenRouter)
+- aiogram 3
+- asyncpg
+- aiohttp
 - PostgreSQL 16
 - Docker Compose
+- OpenRouter API
+- Модель: `arcee-ai/trinity-large-preview:free`
 
-## Структура
+## Структура проекта
 
-- `scripts/main.py` - точка входа
-- `scripts/bot.py` - обработка сообщений Telegram
-- `scripts/llm_client.py` - классификация вопроса, системный промпт, валидация и генерация SQL через OpenRouter
-- `scripts/database.py` - инициализация БД, загрузка JSON, выполнение SQL
-- `sql/schema.sql` - создание таблиц и индексов
+- `scripts/main.py` — запуск приложения
+- `scripts/bot.py` — Telegram handlers
+- `scripts/llm.py` — вызов OpenRouter и преобразование текста в JSON-план
+- `scripts/core.py` — настройки, подключение к БД, импорт JSON и SQL-builder
+- `scripts/seed.py` — запуск инициализации БД и импорта
+- `sql/schema.sql` — создание таблиц и индексов
+- `videos.json` — входные данные
 
-## Переменные окружения
+## Быстрый запуск
 
-Шаблон: `.env.example`.
-
-- `BOT_TOKEN` — токен Telegram-бота
-- `OPENROUTER_API_KEY` — ключ OpenRouter
-
-## Как получить чувствительные данные
-
-- `BOT_TOKEN`: создать бота через `@BotFather` в Telegram (команда `/newbot`), затем взять выданный токен и записать в `.env`.
-- `OPENROUTER_API_KEY`: зарегистрироваться на OpenRouter, создать ключ в кабинете (`https://openrouter.ai/keys`) и записать его в `.env`.
-- Перед запуском создать `.env` на основе `.env.example` и заполнить обязательные переменные.
-
-
-Параметры устойчивости LLM-запросов:
-
-- `LLM_MAX_RETRIES` — число повторов при сетевых сбоях OpenRouter
-- `LLM_RETRY_BASE_DELAY_SECONDS` — базовая задержка между ретраями
-- `LLM_RETRY_MAX_DELAY_SECONDS` — максимальная задержка между ретраями
-
-
-## Запуск 
+1. Создать `.env` на основе `.env.example`
+2. Заполнить `TELEGRAM_BOT_TOKEN`
+3. Заполнить `OPENROUTER_API_KEY`
+4. Запустить:
 
 ```bash
 docker compose up --build
 ```
 
-## Ручная перезагрузка данных
+После старта приложение:
+
+- подключится к PostgreSQL
+- создаст таблицы
+- загрузит `videos.json` (если таблица `videos` пустая)
+- запустит Telegram-бота
+
+## Переменные окружения
+
+Пример в `.env.example`.
+
+Обязательные:
+
+- `TELEGRAM_BOT_TOKEN` — токен Telegram-бота
+- `OPENROUTER_API_KEY` — ключ OpenRouter
+
+Основные:
+
+- `OPENROUTER_MODEL` — по умолчанию `arcee-ai/trinity-large-preview:free`
+- `DATABASE_URL` — строка подключения к PostgreSQL
+- `DATA_FILE_PATH` — путь до `videos.json`
+
+## Как получить чувствительные данные
+
+- `TELEGRAM_BOT_TOKEN`: создать бота через `@BotFather` в Telegram
+- `OPENROUTER_API_KEY`: создать ключ в `https://openrouter.ai/settings/keys` и указать его в `.env`
+
+## Инициализация БД и загрузка JSON
+
+Инициализация и импорт выполняются автоматически при старте `scripts`.
+
+Отдельно можно запустить только импорт:
 
 ```bash
-docker compose run --rm bot python -m scripts.main --load-only --force
+docker compose run --rm bot python -m scripts.seed
 ```
 
-## Подход к преобразованию текста в SQL
+## Архитектура и преобразование текста в запрос к БД
 
-1. Пользователь отправляет вопрос на русском.
-2. `scripts/llm_client.py` через OpenRouter определяет, относится ли вопрос к метрикам.
-3. Если вопрос не по метрикам — бот возвращает `0`.
-4. Если вопрос по метрикам — OpenRouter модель `qwen/qwen3-235b-a22b-thinking-2507` строит SQL.
-5. SQL проходит валидацию (внутри `scripts/llm_client.py`): только `SELECT`, только разрешенные таблицы, без опасных ключевых слов и без нескольких выражений.
-6. Запрос исполняется в read-only транзакции, пользователю возвращается только одно число.
+Пайплайн:
 
-## Системный промпт
+1. Пользователь отправляет вопрос в Telegram
+2. `scripts/llm.py` отправляет текст в OpenRouter
+3. LLM возвращает строго JSON-план (не SQL)
+4. `scripts/core.py` валидирует поля/операторы по whitelist
+5. Из JSON-плана собирается безопасный SQL с параметрами
+6. Выполняется запрос в PostgreSQL
+7. Бот возвращает одно число
 
-Ты конвертируешь вопрос на русском в один SQL для PostgreSQL 16.
-Текущая дата: {today}.
+Такой подход дает:
 
-Схема:
-videos(id, creator_id, video_created_at, views_count, likes_count, comments_count, reports_count, created_at, updated_at)
-video_snapshots(id, video_id, views_count, likes_count, comments_count, reports_count, delta_views_count, delta_likes_count, delta_comments_count, delta_reports_count, created_at, updated_at)
+- гибкость распознавания естественного языка
+- контроль над SQL (LLM не исполняет произвольный SQL)
+- предсказуемость при проверке
 
-Правила:
-1) Итоговые значения за все время бери из videos.
-2) Прирост/новые за день или период бери из video_snapshots по delta_*.
-3) "Сколько разных видео получали новые просмотры" = COUNT(DISTINCT video_id) и delta_views_count > 0.
-4) Дата публикации видео: videos.video_created_at.
-5) Активность/прирост по времени: video_snapshots.created_at.
-6) Одна дата и диапазон дат включительны:
-   col >= DATE 'YYYY-MM-DD' AND col < DATE 'YYYY-MM-DD' + INTERVAL '1 day'
-   для периода "с ... по ...": левая граница = start, правая = end + 1 day.
-7) Возвращай одну числовую колонку `value`.
-8) Для SUM используй COALESCE(SUM(...), 0).
-9) Только SELECT. Без объяснений, markdown, комментариев, лишнего текста.
 
-Примеры:
-Q: Сколько всего видео есть в системе?
-SQL: SELECT COUNT(*)::bigint AS value FROM videos
 
-Q: Сколько видео у креатора с id abc123 вышло с 1 ноября 2025 по 5 ноября 2025 включительно?
-SQL: SELECT COUNT(*)::bigint AS value FROM videos WHERE creator_id = 'abc123' AND video_created_at >= DATE '2025-11-01' AND video_created_at < DATE '2025-11-05' + INTERVAL '1 day'
+Дальше:
 
-Q: Сколько видео набрало больше 100000 просмотров за всё время?
-SQL: SELECT COUNT(*)::bigint AS value FROM videos WHERE views_count > 100000
+- валидирует JSON-план по whitelist полей и операций
+- строит обычный SQL-запрос к PostgreSQL
+- выполняет этот SQL в базе
+- возвращает одно число
 
-Q: На сколько просмотров в сумме выросли все видео 28 ноября 2025?
-SQL: SELECT COALESCE(SUM(delta_views_count), 0)::bigint AS value FROM video_snapshots WHERE created_at >= DATE '2025-11-28' AND created_at < DATE '2025-11-28' + INTERVAL '1 day'
+То есть фактический расчет всегда выполняется SQL в PostgreSQL, LLM же используется для преобразования естественного языка в контролируемую структуру.
 
-Q: Сколько разных видео получали новые просмотры 27 ноября 2025?
-SQL: SELECT COUNT(DISTINCT video_id)::bigint AS value FROM video_snapshots WHERE delta_views_count > 0 AND created_at >= DATE '2025-11-27' AND created_at < DATE '2025-11-27' + INTERVAL '1 day'
+## Описание схемы данных для LLM и промпт
 
-Q: Сколько всего лайков у всех видео за всё время?
-SQL: SELECT COALESCE(SUM(likes_count), 0)::bigint AS value FROM videos
+LLM получает явное описание двух таблиц:
 
-Q: На сколько в сумме выросли лайки с 1 ноября 2025 по 3 ноября 2025?
-SQL: SELECT COALESCE(SUM(delta_likes_count), 0)::bigint AS value FROM video_snapshots WHERE created_at >= DATE '2025-11-01' AND created_at < DATE '2025-11-03' + INTERVAL '1 day'
+- `videos` — финальные значения метрик по ролику
+- `video_snapshots` — почасовые замеры и поля `delta_*` для приростов
 
-Q: Сколько всего жалоб у всех видео?
-SQL: SELECT COALESCE(SUM(reports_count), 0)::bigint AS value FROM videos
+LLM  возвращает JSON-план формата:
 
-Верни только SQL-запрос.
+```json
+{
+  "source": "videos",
+  "aggregation": "count_rows",
+  "field": "*",
+  "filters": [
+    {
+      "field": "video_created_at",
+      "op": "date_between",
+      "from": "2025-11-01",
+      "to": "2025-11-05"
+    }
+  ]
+}
+```
+
+В промпте зафиксированы правила:
+
+- для прироста использовать `video_snapshots` и поля `delta_*`
+- для финальных значений использовать `videos`
+- для дат использовать `date_on` и `date_between`
+- не выдумывать таблицы и поля
+- возвращать только JSON
+
+Промпт находится в `scripts/llm.py`.
+
+Пример преобразования:
+
+- Вопрос: `Сколько видео набрало больше 100 000 просмотров за всё время?`
+- JSON-план: `{"source":"videos","aggregation":"count_rows","field":"*","filters":[{"field":"views_count","op":"gt","value":100000}]}`
+- SQL, который получается на выходе: `SELECT COUNT(*)::bigint AS value FROM videos WHERE views_count > $1`
